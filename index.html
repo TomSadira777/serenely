@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
   <title>Serenely</title>
   <meta name="description" content="Your personal sleep sound sanctuary" />
-  <meta name="theme-color" content="#1a0f2e" />
+  <meta name="theme-color" content="#4E3667" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Serenely" />
@@ -39,7 +39,7 @@
       /* Cluster sizing — driven by viewport, capped for large screens */
       --cluster-size: min(88vw, 400px);
       --sound-btn-size: calc(var(--cluster-size) * 0.33);
-      --play-btn-size:  calc(var(--cluster-size) * 0.18);
+      --play-btn-size:  calc(var(--cluster-size) * 0.255);
     }
 
     html {
@@ -104,10 +104,10 @@
       align-items: center;
       justify-content: center;
       gap: 0;
-      padding: 16px 24px 24px;
+      padding: 40px 24px 48px;
     }
 
-    /* ── Wordmark ── */
+    /* ── Wordmark image ── */
     .wordmark {
       text-align: center;
       margin-bottom: clamp(20px, 5vh, 40px);
@@ -115,16 +115,12 @@
       opacity: 0;
     }
 
-    .wordmark h1 {
-      font-family: 'Rouge Script', cursive;
-      font-size: clamp(60px, 16vw, 96px);
-      color: var(--lavender-soft);
-      letter-spacing: 4px;
-      line-height: 1;
-      text-shadow:
-        0 0 60px rgba(180, 140, 240, 0.6),
-        0 0 120px rgba(130, 85, 210, 0.25),
-        0 2px 4px rgba(0,0,0,0.4);
+    .wordmark img {
+      width: clamp(240px, 72vw, 380px);
+      height: auto;
+      filter:
+        drop-shadow(0 0 30px rgba(180,140,240,0.5))
+        drop-shadow(0 0 80px rgba(130,85,210,0.2));
     }
 
     /* thin divider line beneath wordmark */
@@ -332,8 +328,8 @@
     .no-birds {
       margin-top: clamp(10px, 2.5vh, 20px);
       font-family: 'Rouge Script', cursive;
-      font-size: clamp(18px, 5vw, 26px);
-      color: rgba(160, 120, 200, 0.28);
+      font-size: clamp(24px, 6.5vw, 34px);
+      color: rgba(195, 160, 230, 0.55);
       letter-spacing: 1px;
       animation: fadeUp 1.8s cubic-bezier(0.16,1,0.3,1) 1.1s forwards;
       opacity: 0;
@@ -344,7 +340,7 @@
 <div id="app">
 
   <div class="wordmark">
-    <h1>Serenely</h1>
+    <img src="serenely-title.png" alt="Serenely" />
   </div>
 
   <div class="cluster" id="cluster">
@@ -373,10 +369,6 @@
   <p class="no-birds">absolutely no effing birds</p>
 
 </div>
-
-<audio id="audio-waves"      src="sounds/waves.mp3"      loop preload="none"></audio>
-<audio id="audio-rain"       src="sounds/rain.mp3"       loop preload="none"></audio>
-<audio id="audio-dishwasher" src="sounds/dishwasher.mp3" loop preload="none"></audio>
 
 <script>
 // ─────────────────────────────────────────────────
@@ -438,11 +430,25 @@ const STATE = {
   wakeLock:   null,
 };
 
-const mpAudio = {
-  waves:      document.getElementById('audio-waves'),
-  rain:       document.getElementById('audio-rain'),
-  dishwasher: document.getElementById('audio-dishwasher'),
+const MP3_SRCS = {
+  waves:      'sounds/waves.mp3',
+  rain:       'sounds/rain.mp3',
+  dishwasher: 'sounds/dishwasher.mp3',
 };
+
+// Decoded AudioBuffers cache
+const MP3_BUFFERS = {};
+
+// Fetch and decode an MP3 into an AudioBuffer (gapless looping via Web Audio)
+async function loadMp3(key) {
+  if (MP3_BUFFERS[key]) return MP3_BUFFERS[key];
+  const c = getCtx();
+  const resp = await fetch(MP3_SRCS[key]);
+  const arrayBuf = await resp.arrayBuffer();
+  const audioBuf = await c.decodeAudioData(arrayBuf);
+  MP3_BUFFERS[key] = audioBuf;
+  return audioBuf;
+}
 
 // ── Audio context ─────────────────────────────────
 function getCtx() {
@@ -531,7 +537,6 @@ const volSlider = document.getElementById('volSlider');
 
 function applyVolume(v) {
   STATE.volume = v;
-  Object.values(mpAudio).forEach(a => a.volume = v);
   if (STATE.audioCtx) {
     Object.values(STATE.noiseNodes).forEach(n =>
       n.gain.gain.setTargetAtTime(v, STATE.audioCtx.currentTime, 0.05)
@@ -544,13 +549,23 @@ volSlider.addEventListener('input', () => applyVolume(volSlider.value / 100));
 applyVolume(0.7);
 
 // ── Sound helpers ─────────────────────────────────
-function startSound(key) {
+async function startSound(key) {
   const s = SOUNDS.find(s => s.key === key);
   if (s.type === 'gen') {
     startNoise(key);
   } else {
-    const a = mpAudio[key];
-    if (a) { a.volume = STATE.volume; a.play().catch(() => {}); }
+    if (STATE.noiseNodes[key]) return; // already playing
+    const c = getCtx();
+    const buf = await loadMp3(key);
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.loop = true; // perfectly gapless — Web Audio loops at sample level
+    const gain = c.createGain();
+    gain.gain.value = STATE.volume;
+    src.connect(gain);
+    gain.connect(c.destination);
+    src.start();
+    STATE.noiseNodes[key] = { src, gain };
   }
 }
 
@@ -559,14 +574,21 @@ function stopSound(key) {
   if (s.type === 'gen') {
     stopNoise(key);
   } else {
-    const a = mpAudio[key];
-    if (a) { a.pause(); a.currentTime = 0; }
+    const n = STATE.noiseNodes[key]; if (!n) return;
+    try { n.src.stop(); } catch(e) {}
+    n.gain.disconnect();
+    delete STATE.noiseNodes[key];
   }
 }
 
 function stopAll() {
-  ['white','pink','brown'].forEach(stopNoise);
-  Object.values(mpAudio).forEach(a => { a.pause(); a.currentTime = 0; });
+  Object.keys(STATE.noiseNodes).forEach(key => {
+    const n = STATE.noiseNodes[key]; if (!n) return;
+    try { n.src.stop(); } catch(e) {}
+    try { n.filter?.disconnect(); } catch(e) {}
+    n.gain.disconnect();
+  });
+  STATE.noiseNodes = {};
 }
 
 // ── Wake lock ─────────────────────────────────────
@@ -622,7 +644,7 @@ playBtn.addEventListener('click', async () => {
     }
     STATE.playing = true;
     setPlayUI(true);
-    STATE.selected.forEach(k => startSound(k));
+    await Promise.all([...STATE.selected].map(k => startSound(k)));
     await acquireWakeLock();
   } else {
     STATE.playing = false;
